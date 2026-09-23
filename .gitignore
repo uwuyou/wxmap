@@ -1,0 +1,11 @@
+# 运行时缓存 / 原始数据 (由本地脚本生成, 不应入库)
+cache/
+*.npz
+__pycache__/
+*.pyc
+
+# 本地环境
+.venv/
+node_modules/
+
+# 说明: site/data/*.nc 是 Vercel 部署必需的静态产物, 由 CI 生成并入库, 不可忽略

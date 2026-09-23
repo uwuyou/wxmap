@@ -1,0 +1,63 @@
+name: Update weather data
+
+# 定时 + 手动 更新 GFS/EC 数据并重建静态 site/data
+on:
+  schedule:
+    - cron: "30 2,8,14,20 * * *"   # 每天 02:30/08:30/14:30/20:30 UTC (北京 10:30/16:30/22:30/04:30)
+  workflow_dispatch:                # 支持在 Actions 页手动触发
+
+concurrency:
+  group: update-data
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install system libs (eccodes for cfgrib)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y libeccodes0 libeccodes-dev gcc python3-dev
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Fetch latest GFS/EC raw data
+        run: python tools/fetch_latest.py GFS EC
+
+      - name: Build static NetCDF data
+        run: python tools/build_static_data.py
+
+      - name: Show built files
+        run: |
+          ls -la site/data/
+          cat site/data/manifest.json
+
+      - name: Commit and push data updates
+        run: |
+          git config user.name "wx-data-bot"
+          git config user.email "wx-data-bot@users.noreply.github.com"
+          git add site/data
+          if git diff --cached --quiet; then
+            echo "没有数据变化，跳过提交"
+          else
+            git commit -m "chore(data): 定时更新天气数据 $(date -u +%Y%m%d%H%M)"
+            git push origin HEAD:main
+            echo "已提交并推送，触发 Vercel 重新部署"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

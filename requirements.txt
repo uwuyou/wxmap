@@ -1,0 +1,6 @@
+fastapi>=0.110
+uvicorn>=0.29
+numpy>=1.24
+scipy>=1.11
+cfgrib>=0.9.12
+ecmwf-opendata>=0.4.0

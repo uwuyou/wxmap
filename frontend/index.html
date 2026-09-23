@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>EC / GFS 多要素天气可视化</title>
+<link rel="stylesheet" href="/static/leaflet.css"/>
+  <script src="/static/leaflet.js"></script>
+  <script src="/static/netcdfjs.js"></script>
+<style>
+:root{--bg:#0d1626;--panel:rgba(16,26,45,.92);--line:#2b3c59;--txt:#dbe7ff;--muted:#8aa0c4;--acc:#4aa3ff;}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;background:var(--bg);color:var(--txt);overflow:hidden}
+#map{position:absolute;left:0;top:0;bottom:0;width:100%;background:#a9c9e8}
+#map2{position:absolute;left:51%;top:0;bottom:0;width:calc(50% - 2px);background:#a9c9e8;display:none;border-left:2px solid var(--line)}
+body.compare #map{width:50%}
+body.compare #map2{display:block}
+.panel{position:absolute;z-index:1000;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px;backdrop-filter:blur(6px);box-shadow:0 8px 30px rgba(0,0,0,.45)}
+#ctl{top:14px;left:14px;width:330px;max-height:calc(100% - 40px);overflow:auto}
+h1{font-size:16px;margin:0 0 2px;letter-spacing:.5px}
+.sub{color:var(--muted);font-size:11px;margin-bottom:10px}
+.row{margin:9px 0}
+.lbl{font-size:11px;color:var(--muted);display:block;margin-bottom:4px}
+select,input[type=range],.btn{width:100%;padding:6px 8px;border-radius:7px;border:1px solid var(--line);background:#0f1a2e;color:var(--txt);font-size:13px;outline:none}
+.switch,.btns{display:flex;gap:4px;flex-wrap:wrap}
+.btn{flex:1;text-align:center;cursor:pointer;border:1px solid var(--line);background:#0f1a2e;min-width:58px}
+.btn:hover{border-color:var(--acc)}
+.btn.on{background:var(--acc);color:#04121f;border-color:var(--acc);font-weight:600}
+#compareBtn.on{background:#ffb54a;color:#2a1600;border-color:#ffb54a}
+.oprow{display:flex;align-items:center;gap:8px}
+.oprow input[type=range]{flex:1}
+.check{display:flex;align-items:center;gap:6px;font-size:13px}
+.legend{position:absolute;z-index:1000;left:14px;bottom:18px;width:240px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.legend h3{margin:0 0 6px;font-size:12px}
+.bar{height:14px;border-radius:6px;border:1px solid rgba(255,255,255,.15)}
+.labels{display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:3px}
+#status{position:absolute;z-index:1000;right:14px;top:14px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:12px;max-width:300px}
+#status .d{color:var(--muted);font-size:11px;margin-top:3px}
+.cmpbar{position:absolute;z-index:1000;left:50%;transform:translateX(-50%);top:14px;display:none;gap:8px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 12px;align-items:center}
+body.compare .cmpbar{display:flex}
+.cmpbar select{width:110px}
+.cmpbar .t{display:flex;flex-direction:column;align-items:center;font-size:10px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="map2"></div>
+
+<div class="cmpbar">
+  <div class="t">左图 (A)<select id="stepA" style="width:90px"></select></div>
+  <div class="t">右图 (B)<select id="stepB" style="width:90px"></select></div>
+</div>
+
+<div class="panel" id="ctl">
+  <h1>🌦 EC / GFS 多要素天气</h1>
+  <div class="sub" id="runInfo">正在探测最近时次…</div>
+  <div class="row"><span class="lbl">数据源</span>
+    <div class="switch">
+      <div class="btn on" id="srcGFS" onclick="setSource('GFS')">GFS</div>
+      <div class="btn" id="srcEC" onclick="setSource('EC')">EC</div>
+    </div>
+  </div>
+  <div class="row"><span class="lbl">气象要素</span>
+    <div class="btns" id="elems">
+      <div class="btn on" data-e="cloud" onclick="setElem('cloud')">云</div>
+      <div class="btn" data-e="rain" onclick="setElem('rain')">雨</div>
+      <div class="btn" data-e="fog" onclick="setElem('fog')">雾</div>
+      <div class="btn" data-e="rh" onclick="setElem('rh')">湿度</div>
+      <div class="btn" data-e="temp" onclick="setElem('temp')">温度</div>
+    </div>
+  </div>
+  <div class="row"><span class="lbl">海拔 / 气压层 <span id="lvlNote" style="color:#9db4d9"></span></span>
+    <select id="level" onchange="setLevel(this.value)">
+      <option value="surface">🌟 地面 / 近地面</option>
+      <option value="925">925 hPa</option>
+      <option value="850">850 hPa</option>
+      <option value="700">700 hPa</option>
+      <option value="500">500 hPa</option>
+      <option value="300">300 hPa</option>
+    </select>
+  </div>
+  <div class="row"><span class="lbl">预报时效（多时效）</span>
+    <div class="btns" style="margin-bottom:6px">
+      <div class="btn" onclick="stepN(-1)">◀ 上一时次</div>
+      <div class="btn" onclick="stepN(1)">下一时次 ▶</div>
+      <div class="btn" id="compareBtn" onclick="toggleCompare()">🔁 双时次对比</div>
+    </div>
+    <input type="range" id="step" min="0" max="0" step="1" oninput="setStep(+this.value)"/>
+    <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:3px"><span id="stepTxt">-</span><span id="validTxt"></span></div>
+  </div>
+  <div class="row"><span class="lbl">叠加不透明度</span><input type="range" id="opacity" min="5" max="100" value="70" oninput="setOpacity(+this.value/100)"/></div>
+  <div class="row check"><input type="checkbox" id="wd" style="width:auto;flex:none" checked onchange="render()"/> 风矢量箭头</div>
+  <div class="row"><span class="lbl">箭头长度</span><input type="range" id="wscale" min="0.4" max="3" step="0.1" value="1" oninput="render()"/></div>
+  <div class="row"><div class="btn" onclick="loadRuns()">🔄 拉取最新数据</div></div>
+</div>
+
+<div class="legend">
+  <h3 id="lgTitle">图例</h3>
+  <div class="bar" id="lgBar"></div>
+  <div class="labels"><span id="lgMin">-</span><span id="lgMax">-</span></div>
+</div>
+
+<div id="status"><b id="st">加载中…</b><div class="d" id="stD">请稍候</div></div>
+
+<script>
+const META={
+  temp:{title:"温度",unit:"°C",
+    fs:[[38,38,120],[60,120,230],[90,200,255],[70,190,90],[245,230,80],[245,140,60],[220,45,40]],
+    scale:v=>clamp((v+45)/90,0,1),note:"显示所选气压层气温"},
+  rh:{title:"相对湿度",unit:"%",
+    fs:[[160,150,120],[220,220,160],[120,200,120],[80,170,200],[30,110,200],[90,30,170]],
+    scale:v=>clamp(v/100,0,1)},
+  cloud:{title:"总云量",unit:"%",
+    fs:[[250,252,255],[210,214,222],[160,170,184],[110,120,140],[70,78,96],[36,42,56]],
+    scale:v=>clamp(v/100,0,1)},
+  rain:{title:"降水强度",unit:"mm/h",
+    fs:[[8,70,140],[30,130,220],[60,100,230],[120,70,220],[190,60,200],[230,90,120],[255,230,120]],
+    scale:v=>clamp(Math.log10(Math.max(v,0.02)+0.02)/2.4,0,1),log:true},
+  fog:{title:"雾(派生:低云+湿度)",unit:"",
+    fs:[[245,245,245],[210,225,235],[170,205,225],[130,180,215],[90,150,200],[50,110,175]],
+    scale:v=>clamp(v/100,0,1)}
+};
+const SURF_ONLY=["rain","fog","cloud"];
+var source="GFS", date="", hour=0, steps=[], level="surface", elem="cloud", compare=false;
+var latA=[],lonA=[];
+var payload=null, payloadB=null;
+var ovA=null,ovB=null, windA=null, windB=null, opacity=0.7;
+
+function clamp(v,a,b){return v<a?a:(v>b?b:v)}
+function $(id){return document.getElementById(id)}
+function outOfChina(lat,lng){return lng<72.004||lng>137.8347||lat<0.8293||lat>55.8271}
+const PI=Math.PI,A=6378245,EE=0.00669342162296594323;
+function _tlat(x,y){let r=-100+2*x+3*y+0.2*y*y+0.1*x*y+0.2*Math.sqrt(Math.abs(x));
+  r+=(20*Math.sin(6*x*PI)+20*Math.sin(2*x*PI))*2/3;
+  r+=(20*Math.sin(y*PI)+40*Math.sin(y/3*PI))*2/3; r+=(160*Math.sin(y/12*PI)+320*Math.sin(y*PI/30))*2/3; return r;}
+function _tlng(x,y){let r=300+x+2*y+0.1*x*x+0.1*x*y+0.1*Math.sqrt(Math.abs(x));
+  r+=(20*Math.sin(6*x*PI)+20*Math.sin(2*x*PI))*2/3; r+=(20*Math.sin(x*PI)+40*Math.sin(x/3*PI))*2/3;
+  r+=(150*Math.sin(x/12*PI)+300*Math.sin(x/30*PI))*2/3; return r;}
+function wgs2gcj(lat,lng){if(outOfChina(lat,lng))return[lat,lng];
+  let dlat=_tlat(lng-105,lat-35),dlng=_tlng(lng-105,lat-35);
+  let rad=lat/180*PI,m=Math.sin(rad),s=1-EE*m*m,sq=Math.sqrt(s);
+  dlat=dlat*180/((A*(1-EE))/(s*sq)*PI); dlng=dlng*180/(A/sq*Math.cos(rad)*PI);
+  return [lat+dlat,lng+dlng];}
+function ll(lat,lng){let g=wgs2gcj(lat,lng);return L.latLng(g[0],g[1]);}
+
+var base=L.tileLayer("https://rt{s}.map.gtimg.com/realtimerender?z={z}&x={x}&y={y}&type=vector&styleid=1",
+  {subdomains:"0123",maxZoom:18,attribution:"Tencent",tileSize:256});
+function initMap(el){var m=L.map(el,{zoomControl:true,attributionControl:false,zoomSnap:.5}).setView([32.5,106],5);base.addTo(m);return m;}
+var map=initMap("map");
+var map2=initMap("map2"); map2.options.zoomControl=false;
+map.getContainer().style.zIndex=1; map2.getContainer().style.zIndex=1;
+
+/* ---------- 着色 ---------- */
+function colorFor(v){const M=META[elem];if(v==null||!isFinite(v))return[0,0,0,0];
+  const t=M.scale(v),fs=M.fs,f=t*(fs.length-1),i=Math.min(Math.floor(f),fs.length-2),fr=f-i,c0=fs[i],c1=fs[i+1];
+  let r=c0[0]+(c1[0]-c0[0])*fr,g=c0[1]+(c1[1]-c0[1])*fr,b=c0[2]+(c1[2]-c0[2])*fr,a=1;
+  if(elem==="rain"&&v<0.05)a=0; if(elem==="fog"&&v<12)a=0;
+  return [r,g,b,a*0.9];}
+function setLegend(){
+  const M=META[elem],fs=M.fs;
+  const stops=fs.map((c,i)=>`rgba(${c[0]},${c[1]},${c[2]},1) ${i/(fs.length-1)*100}%`).join(",");
+  $("lgBar").style.background="linear-gradient(90deg,"+stops+")";
+  $("lgTitle").textContent=M.title+(M.unit?" ("+M.unit+")":"");
+  $("lgMin").textContent=elem==="temp"?"-30°C":(elem==="rain"?"<0.05":0);
+  $("lgMax").textContent=elem==="temp"?"40°C":(elem==="rain"?"≥50mm/h":"高");
+}
+
+/* ---------- 栅格叠加 ---------- */
+function buildRaster(m){
+  const data = elemData(m===map2?payloadB:payload);
+  if(!data)return null;
+  const S=2,ny=data.length,nx=data[0].length,W=(nx-1)*S,H=(ny-1)*S,can=document.createElement("canvas");
+  can.width=Math.max(1,W);can.height=Math.max(1,H);
+  const ctx=can.getContext("2d"),im=ctx.createImageData(can.width,can.height);im.data.fill(0);
+  for(let y=0;y<H;y++){const fy=y/S,i0=Math.min(Math.floor(fy),ny-2),ff=fy-i0;
+    for(let x=0;x<W;x++){const fx=x/S,j0=Math.min(Math.floor(fx),nx-2),fk=fx-j0;
+      const v00=data[i0][j0],v01=data[i0][j0+1],v10=data[i0+1][j0],v11=data[i0+1][j0+1];
+      const a=lerp(v00,v01,fk),c=lerp(v10,v11,fk),v=lerp(a,c,ff);
+      if(v==null)continue; const col=colorFor(v),p=(y*W+x)*4;
+      im.data[p]=col[0];im.data[p+1]=col[1];im.data[p+2]=col[2];im.data[p+3]=Math.round(col[3]*255);}}
+  ctx.putImageData(im,0,0);
+  const la=(m===map2?payloadB:payload).lat,lo=(m===map2?payloadB:payload).lon;
+  const sw=ll(la[la.length-1],lo[0]),ne=ll(la[0],lo[lo.length-1]);
+  return L.imageOverlay(can.toDataURL(),L.latLngBounds(sw,ne),{opacity:opacity,interactive:false,zIndex:400}).addTo(m);
+}
+function lerp(a,b,f){if(a==null||!isFinite(a))return b==null||!isFinite(b)?null:b;if(b==null||!isFinite(b))return a;return a+(b-a)*f;}
+function elemData(p){if(!p)return null;
+  if(level!=="surface"&&SURF_ONLY.indexOf(elem)>=0)return null;
+  return p.elems[elem]?p.elems[elem].v:null;}
+
+/* ---------- 风箭头 ---------- */
+function addWind(m){const c=document.createElement("canvas");
+  c.style.position="absolute";c.style.pointerEvents="none";c.style.zIndex=500;
+  m.getPanes().overlayPane.appendChild(c);
+  const redraw=()=>requestAnimationFrame(()=>drawWind(m,c));
+  m.on("move zoom moveend resize",()=>setTimeout(redraw,10)); setTimeout(redraw,80);
+  return {canvas:c,redraw,remove(){m.off("move zoom moveend resize");c.remove();}};}
+function drawWind(m,c){const p=(m===map2?payloadB:payload);
+  if(!p||!p.wind||!$("wd").checked)return;
+  const rc=c.getBoundingClientRect();
+  if(c.width!==Math.round(rc.width)||c.height!==Math.round(rc.height)){c.width=Math.round(rc.width);c.height=Math.round(rc.height);}
+  const ctx=c.getContext("2d");ctx.clearRect(0,0,c.width,c.height);
+  const u=p.wind.u,v=p.wind.v,ny=u.length,nx=u[0].length,la=p.lat,lo=p.lon;
+  const st=Math.max(1,Math.ceil(Math.max(ny,nx)/46));
+  ctx.strokeStyle="rgba(10,20,34,.95)";ctx.fillStyle="#0b1626";ctx.lineWidth=1.3;
+  for(let i=0;i<ny;i+=st){for(let j=0;j<nx;j+=st){
+    const uu=safe(u,i,j),vv=safe(v,i,j);if(uu==null||vv==null||(Math.abs(uu)<0.4&&Math.abs(vv)<0.4))continue;
+    const sp=Math.hypot(uu,vv),Ln=Math.max(5,10+sp*2.2*(+$("wscale").value||1)),a=Math.atan2(vv,uu);
+    const p0=m.latLngToContainerPoint(ll(la[i],lo[j]));
+    const x2=p0.x+Math.cos(a)*Ln,y2=p0.y+Math.sin(a)*Ln;
+    const h=Math.min(6,Ln*0.4),ba=a-135*Math.PI/180,bb=a+135*Math.PI/180;
+    ctx.beginPath();ctx.moveTo(p0.x,p0.y);ctx.lineTo(x2,y2);
+    ctx.lineTo(x2+h*Math.cos(ba),y2+h*Math.sin(ba));
+    ctx.moveTo(x2,y2);ctx.lineTo(x2+h*Math.cos(bb),y2+h*Math.sin(bb));
+    ctx.stroke();}}
+}
+function safe(g,i,j){const r=g[i];if(!r)return null;const x=r[j];return x==null||!isFinite(x)?null:x;}
+
+/* ---------- 渲染主流程 ---------- */
+function render(){
+  if(ovA){ovA.remove();ovA=null;} if(ovB){ovB.remove();ovB=null;}
+  if(windA){windA.remove();windA=null;} if(windB){windB.remove();windB=null;}
+  ovA=buildRaster(map);
+  if(compare&&payloadB){ovB=buildRaster(map2);}
+  if($("wd").checked){windA=addWind(map); if(compare&&payloadB)windB=addWind(map2);}
+}
+function setOpacity(o){opacity=o;if(ovA)ovA.setOpacity(opacity);if(ovB)ovB.setOpacity(opacity);}
+
+/* ---------- 数据加载 (NetCDF 前端直接解析) ---------- */
+const VARIABLES=["temp","rh","cloud","rain","fog"];
+var NCParser=null;
+function initNC(){try{var g=(typeof netcdf_global!=="undefined")?netcdf_global:(typeof require!=="undefined"&&require("netcdfjs"));
+  if(g&&g.NetCDFReader)NCParser=g.NetCDFReader;}catch(e){NCParser=null;}return NCParser;}
+async function api(p){if(!initNC())throw new Error("NetCDF解析器未加载");const r=await fetch(p);
+  const ctype=r.headers.get("content-type")||"";
+  if(!r.ok){let t=await r.text();try{t=JSON.parse(t).error||t}catch(e){}throw new Error(t);}
+  if(p.includes("/api/nc")){
+    // 二进制 NetCDF -> 由浏览器直接解析 (netcdfjs: 多维变量返回扁平数组)
+    const buf=await r.arrayBuffer();
+    const rd=new NCParser(buf);
+    const has=(n)=>{try{return rd.dataVariableExists(n);}catch(e){return false;}};
+    const lat=Array.prototype.slice.call(rd.getDataVariable("lat"));
+    const lon=Array.prototype.slice.call(rd.getDataVariable("lon"));
+    const ny=lat.length,nx=lon.length;
+    const toGrid2D=(nombre)=>{   // 扁平 -> 嵌套 data[i][j]
+      let f=rd.getDataVariable(nombre);
+      if(!f)return null; const fv=Array.prototype.slice.call(f);
+      const g=new Array(ny); for(let i=0;i<ny;i++){g[i]=new Array(nx);for(let j=0;j<nx;j++)g[i][j]=fv[i*nx+j];}
+      return g;
+    };
+    const elems={},wind={};
+    var level=$("level").value;
+    for(const name of VARIABLES){
+      const key="sfc_"+name;
+      if(has(key))elems[name]={v:toGrid2D(key),meta:META[name]};
+      else if(level!=="surface"&&has(level+"_"+name))elems[name]={v:toGrid2D(level+"_"+name),meta:META[name]};
+    }
+    if(has("wind_u")&&has("wind_v")){
+      const u=toGrid2D("wind_u"),v=toGrid2D("wind_v");
+      let mag=0,nyy=u?u.length:0,nxx=(u&&u[0])?u[0].length:0;
+      if(u&&v&&nyy&&nxx)for(let i=0;i<nyy;i++)for(let j=0;j<nxx;j++){
+        const m=Math.hypot(u[i][j],v[i][j]);if(isFinite(m)&&m>mag)mag=m;}
+      Object.assign(wind,{u,v,mag:round1(mag)});
+    }
+    let meta={};try{meta=JSON.parse(r.headers.get("X-Grid-Meta")||"{}")}catch(e){}
+    return {lat,lon,elems,wind,step:meta.step||p.step,valid:p.valid,ms:meta.ms,level};
+  }
+  const j=await r.json();if(j.error)throw new Error(j.error);return j;
+}
+function round1(x){return Math.round(x*10)/10;}
+async function loadRuns(){
+  $("st").textContent="探测最近时次…";
+  try{
+    const j=await api("/api/runs?source="+source);
+    date=j.date;hour=j.hour;steps=j.steps;
+    $("runInfo").textContent="起报 "+j.date+" "+String(hour).padStart(2,"0")+"时 · 区域 中国及周边(70-140E/10-60N) · 最近更新 "+new Date().toLocaleTimeString();
+    const sl=$("step");sl.min=0;sl.max=steps.length-1;sl.value=0;
+    fillSteps($("stepA"));fillSteps($("stepB"));
+    $("stepB").value=Math.min(steps[1],steps[steps.length-1]);
+    await loadGrid(0,"A");
+  }catch(e){$("st").textContent="探测失败: "+e.message;$("stD").textContent="请检查网络";}
+}
+function fillSteps(sel){sel.innerHTML="";steps.forEach(s=>{const o=document.createElement("option");o.value=s;o.text="+"+s+"h";sel.appendChild(o);});}
+async function loadGrid(istep,which){
+  const s=steps[istep];
+  $("st").textContent="加载时效 +"+s+"h("+(which==="A"?"左图":"右图")+")…";$("stD").textContent="下载·解码·裁剪·降采样中，首次较慢";
+  try{
+    const p=await api(`/api/nc?source=${source}&date=${date}&hour=${hour}&step=${s}&level=${level}`);
+    if(which==="A")payload=p;else payloadB=p;
+    $("validTxt").textContent="起报 "+date+" "+String(hour).padStart(2,"0")+"时";
+    $("st").textContent=source+" · 时效 +"+(p.step||s)+"h"+(p.ms?" (NetCDF解析 "+p.ms+"ms)":"");
+    $("stD").textContent="要素:"+META[elem].title+" 层:"+(level==="surface"?"地面":level+"hPa")+
+      (which==="B"?" (右侧已加载)":"");
+    $("stepTxt").textContent="时效 +"+(p.step||s)+"h";
+    render();
+  }catch(e){$("st").textContent="加载失败: "+e.message;$("stD").textContent="重试中…";
+    if(which==="A")setTimeout(()=>loadGrid(istep,"A"),2500);}
+}
+
+/* ---------- 控件事件 ---------- */
+function setSource(s){source=s;$("srcGFS").classList.toggle("on",s==="GFS");$("srcEC").classList.toggle("on",s==="EC");
+  payload=payloadB=null;loadRuns();}
+function setElem(e){elem=e;
+  document.querySelectorAll("#elems .btn").forEach(b=>b.classList.toggle("on",b.dataset.e===e));
+  setLegend();
+  $("lvlNote").textContent=(level!=="surface"&&SURF_ONLY.indexOf(e)>=0)?" (云/雨/雾为地面量,气压层下已隐藏)":"";
+  render();}
+function setLevel(v){level=v;setElem(elem);}
+function setStep(i){loadGrid(+i,"A");}
+function stepN(k){const sl=$("step");sl.value=clamp(+sl.value+k,0,steps.length-1);setStep(+sl.value);}
+function toggleCompare(){compare=!compare;$("compareBtn").classList.toggle("on",compare);
+  document.body.classList.toggle("compare",compare);
+  if(compare){// 加载右侧时效
+    const sb=+$("stepB").value; loadGrid(steps.indexOf(sb),"B");
+  }else{ payloadB=null; render(); }
+}
+$("stepA").onchange=function(){const v=+this.value;payload=null;loadGrid(steps.indexOf(v),"A");};
+$("stepB").onchange=function(){const v=+this.value;payloadB=null;loadGrid(steps.indexOf(v),"B");};
+
+setLegend();
+loadRuns();
+</script>
+</body>
+</html>
